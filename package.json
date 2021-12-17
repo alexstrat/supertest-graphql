@@ -9,7 +9,8 @@
     "test": "jest",
     "check-types": "tsc --noEmit",
     "lint": "eslint . --ext .ts",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "release": "auto shipit"
   },
   "files": [
     "dist"
@@ -52,5 +53,11 @@
     "@types/supertest": "^2.0.11",
     "supertest": "^6.1.6",
     "supertest-graphql": "^0.0.0-beta"
+  },
+  "auto": {
+    "plugins": [
+      "npm"
+    ],
+    "onlyPublishWithReleaseLabel": true
   }
 }
