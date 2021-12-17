@@ -1,6 +1,6 @@
 # supertest-graphql
 <p>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.0.0-blue.svg?cacheSeconds=2592000" />
+  <a href="https://badge.fury.io/js/supertest-graphql"><img src="https://badge.fury.io/js/supertest-graphql.svg" alt="npm version" height="18"></a>
   <a href="#" target="_blank">
     <img alt="License: ISC" src="https://img.shields.io/badge/License-ISC-yellow.svg" />
   </a>
