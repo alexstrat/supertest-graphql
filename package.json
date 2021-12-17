@@ -1,6 +1,6 @@
 {
   "name": "supertest-graphql",
-  "version": "0.0.0-beta",
+  "version": "1.0.0",
   "description": "Extends supertest to test a GraphQL endpoint",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
