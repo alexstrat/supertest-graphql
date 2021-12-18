@@ -37,6 +37,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
+      - name: Prepare repository
+        run: git fetch --unshallow --tags
       - run: npm ci
       - run: npm run release
         env:
