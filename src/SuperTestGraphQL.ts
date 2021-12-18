@@ -178,7 +178,7 @@ export default class SuperTestGraphQL<TData, TVariables extends Variables>
           value: SuperTestExecutionResult<TData>
         ) => TResult1 | PromiseLike<TResult1>)
       | null,
-    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
   ): Promise<TResult1 | TResult2> {
     try {
       if (this._query === undefined)
