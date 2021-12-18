@@ -1,3 +1,15 @@
+# v1.1.1 (Sat Dec 18 2021)
+
+#### ⚠️ Pushed to `master`
+
+- Add auto badge ([@alexstrat](https://github.com/alexstrat))
+
+#### Authors: 1
+
+- Alexandre Lacheze ([@alexstrat](https://github.com/alexstrat))
+
+---
+
 # v1.1.0 (Sat Dec 18 2021)
 
 #### 🚀 Enhancement
