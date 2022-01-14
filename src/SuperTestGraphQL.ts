@@ -1,9 +1,8 @@
 import { DocumentNode, ExecutionResult, GraphQLError, print } from "graphql";
 import { SuperAgentTest, Response } from "supertest";
+import { Variables } from "./types";
 
 import { getOperationName } from "./utils";
-
-export type Variables = { [key: string]: unknown };
 
 type SuperTestExecutionResult<TData> = ExecutionResult<TData> & {
   response: Response;
