@@ -77,6 +77,15 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
     return this;
   }
 
+  /**
+   * Set variables.
+   * @param - variables
+   */
+  variables(variables: TVariables): this {
+    this._variables = variables;
+    return this;
+  }
+
   async then<
     TResult1 = SuperTestExecutionStreamingResult<TData>,
     TResult2 = never
