@@ -59,12 +59,16 @@ class SuperTestExecutionStreamingResult<TData> {
   }
 }
 
+type ConnectionParams = {
+  [paramName: string]: any;
+};
 export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
   implements PromiseLike<SuperTestExecutionStreamingResult<TData>>
 {
   private _query?: string;
   private _operationName?: string;
   private _variables?: TVariables;
+  private _connectionParams?: ConnectionParams;
 
   constructor(private _wsURL: string) {}
 
@@ -86,6 +90,14 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
     return this;
   }
 
+  /**
+   * Set connection params.
+   */
+  connectionParams(params: ConnectionParams): this {
+    this._connectionParams = params;
+    return this;
+  }
+
   async then<
     TResult1 = SuperTestExecutionStreamingResult<TData>,
     TResult2 = never
@@ -102,8 +114,7 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
         const client = new SubscriptionClient(
           this._wsURL,
           {
-            // todo
-            connectionParams: {},
+            connectionParams: this._connectionParams,
             connectionCallback: (error) => {
               if (error) return reject(error);
               res(client);
