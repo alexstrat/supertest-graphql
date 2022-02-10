@@ -2,7 +2,9 @@ import * as http from "http";
 import * as https from "https";
 import { agent } from "supertest";
 import SuperTestGraphQL from "./SuperTestGraphQL";
-import SuperTestWSGraphQL from "./SuperTestWSGraphQL";
+import SuperTestWSGraphQL, {
+  SuperTestExecutionStreamingResultPool,
+} from "./SuperTestWSGraphQL";
 import { Variables } from "./types";
 
 /**
@@ -48,14 +50,21 @@ function getWSBase(server: https.Server | http.Server) {
   return `${protocol}://${hostname}:${address.port}`;
 }
 
-export const supertestWs = <TData, TVariables extends Variables = Variables>(
-  // todo: accept string
-  app: https.Server | http.Server
-): SuperTestWSGraphQL<TData, TVariables> => {
-  // todo: prametrize
-  const url = `${getWSBase(app)}/graphql`;
-  return new SuperTestWSGraphQL<TData, TVariables>(url);
-};
+const mainPool = new SuperTestExecutionStreamingResultPool();
+
+export const supertestWs = Object.assign(
+  <TData, TVariables extends Variables = Variables>(
+    // todo: accept string
+    app: https.Server | http.Server
+  ): SuperTestWSGraphQL<TData, TVariables> => {
+    // todo: prametrize
+    const base = getWSBase(app);
+    return new SuperTestWSGraphQL<TData, TVariables>(base, mainPool);
+  },
+  {
+    end: () => mainPool.endAll(),
+  }
+);
 
 export * from "./SuperTestGraphQL";
 export * from "./types";

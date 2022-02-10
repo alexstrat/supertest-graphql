@@ -275,8 +275,9 @@ describe("test ws", () => {
     server.listen(0, "localhost", done);
   });
 
-  afterEach((done) => {
-    server.close(done);
+  afterEach(async () => {
+    await supertestWs.end();
+    server.close();
   });
 
   it("should work", async () => {
@@ -291,10 +292,8 @@ describe("test ws", () => {
     await delay(200);
 
     pubsub.publish("ON_HI", {});
-    const res = await sub.next();
+    const res = await sub.next().expectNoErrors();
 
     expect(res.data).toEqual({ onHi: "Hi unknown" });
-
-    await sub.close();
   });
 });

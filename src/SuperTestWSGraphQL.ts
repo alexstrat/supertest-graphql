@@ -1,14 +1,25 @@
 import { DocumentNode, ExecutionResult, print } from "graphql";
 import { ObjMap } from "graphql/jsutils/ObjMap";
-import { Observable, SubscriptionClient } from "subscriptions-transport-ws";
+import {
+  Observable,
+  Observer,
+  SubscriptionClient,
+} from "subscriptions-transport-ws";
 import ws from "ws";
 
-import { Variables } from "./types";
-import { BlockingQueue, getOperationName } from "./utils";
+import { AssertFn, Variables } from "./types";
+import {
+  asserNoError,
+  BlockingQueue,
+  getOperationName,
+  wrapAssertFn,
+} from "./utils";
 
 class SuperTestExecutionNextResult<TData>
   implements PromiseLike<ExecutionResult<TData>>
 {
+  private _asserts: AssertFn<TData>[] = [];
+
   constructor(private pop: Promise<ExecutionResult<TData>>) {}
   async then<
     TResult1 = ExecutionResult<TData, ObjMap<unknown>>,
@@ -22,14 +33,31 @@ class SuperTestExecutionNextResult<TData>
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
   ): Promise<TResult1 | TResult2> {
     const res = await this.pop;
+    await this.assert(res);
     if (onfulfilled) return onfulfilled(res);
     // @ts-expect-error no idea why
     return res;
   }
-  // expectNoErrors(): this;
+
+  /**
+   * Assert that there is no errors (`.errors` field) in response returned from the GraphQL API.
+   */
+  expectNoErrors(): this {
+    this._asserts.push(wrapAssertFn(asserNoError));
+    return this;
+  }
+
+  private async assert(result: ExecutionResult<TData>): Promise<void> {
+    for (const assertFn of this._asserts) {
+      const maybeError = await assertFn(result);
+      if (maybeError instanceof Error) throw maybeError;
+    }
+  }
 }
 
-class SuperTestExecutionStreamingResult<TData> {
+class SuperTestExecutionStreamingResult<TData>
+  implements Observable<ExecutionResult<TData>>
+{
   private queue: BlockingQueue<ExecutionResult<TData>> = new BlockingQueue();
 
   constructor(
@@ -46,16 +74,53 @@ class SuperTestExecutionStreamingResult<TData> {
       },
     });
   }
+
+  subscribe(observer: Observer<ExecutionResult<TData, ObjMap<unknown>>>): {
+    unsubscribe: () => void;
+  } {
+    return this.observable.subscribe(observer);
+  }
+
+  /**
+   * Get the next result that the operation is emitting.
+   */
   next(): SuperTestExecutionNextResult<TData> {
     return new SuperTestExecutionNextResult(this.queue.pop());
   }
+
+  /**
+   * Flush the pending results from the queue.
+   */
   flush(): ExecutionResult<TData>[] {
     return this.queue.flush();
   }
-  // expectNoPending(): Promise<void>;
 
+  /**
+   * Assert that no more results are pending.
+   */
+  expectNoPending(): this {
+    if (this.queue.length > 0) {
+      throw new Error(`expect no pending, but got ${this.queue.length}`);
+    }
+    return this;
+  }
+
+  /**
+   * Close the operation and the connection.
+   */
   async close(): Promise<void> {
     this.client.close();
+  }
+}
+
+export class SuperTestExecutionStreamingResultPool {
+  private _subscriptions: SuperTestExecutionStreamingResult<any>[] = [];
+  async endAll(): Promise<void> {
+    await Promise.all(this._subscriptions.map((c) => c.close()));
+    this._subscriptions = [];
+  }
+  add(sub: SuperTestExecutionStreamingResult<any>): void {
+    this._subscriptions.push(sub);
   }
 }
 
@@ -68,11 +133,48 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
   private _query?: string;
   private _operationName?: string;
   private _variables?: TVariables;
+  private _path = "/graphql";
   private _connectionParams?: ConnectionParams;
 
-  constructor(private _wsURL: string) {}
+  constructor(
+    private _hostname: string,
+    private _pool?: SuperTestExecutionStreamingResultPool
+  ) {}
 
+  /**
+   *  Send a GraphQL Query Document to the GraphQL server for execution.
+   * @param operation - the query to execute as string or `DocumentNode`
+   * @param variables - the variables for this query
+   */
   subscribe(operation: DocumentNode | string, variables?: TVariables): this {
+    this.operation(operation, variables);
+    return this;
+  }
+
+  /**
+   * Send a GraphQL Query Document to the GraphQL server for execution.
+   * @param query - the query to execute as string or `DocumentNode`
+   * @param variables - the variables for this query
+   */
+  query(query: DocumentNode | string, variables?: TVariables): this {
+    return this.operation(query, variables);
+  }
+
+  /**
+   * Send a GraphQL Query Document to the GraphQL server for execution.
+   * @param mutation - the mutation to execute as string or `DocumentNode`
+   * @param variables - the variables for this mutation
+   */
+  mutate(mutation: DocumentNode | string, variables?: TVariables): this {
+    return this.operation(mutation, variables);
+  }
+
+  /**
+   * Send a GraphQL Query Document to the GraphQL server for execution.
+   * @param operation - the operation to execute as string or `DocumentNode`
+   * @param variables - the variables for this operation
+   */
+  operation(operation: DocumentNode | string, variables?: TVariables): this {
     if (typeof operation !== "string") {
       this._operationName = getOperationName(operation);
     }
@@ -87,6 +189,16 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
    */
   variables(variables: TVariables): this {
     this._variables = variables;
+    return this;
+  }
+
+  /**
+   * Set the GraphQL endpoint path.
+   *
+   * @default "/graphql"
+   */
+  path(path: string): this {
+    this._path = path;
     return this;
   }
 
@@ -112,11 +224,14 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
     try {
       const client = await new Promise<SubscriptionClient>((res, reject) => {
         const client = new SubscriptionClient(
-          this._wsURL,
+          new URL(this._path, this._hostname).toString(),
           {
             connectionParams: this._connectionParams,
             connectionCallback: (error) => {
-              if (error) return reject(error);
+              if (error) {
+                client.close();
+                return reject(error);
+              }
               res(client);
             },
           },
@@ -134,6 +249,8 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
         client,
         observable as unknown as Observable<ExecutionResult<TData>>
       );
+
+      this._pool?.add(streamingResult);
 
       if (onfulfilled) return onfulfilled(streamingResult);
       // @ts-expect-error no idea why

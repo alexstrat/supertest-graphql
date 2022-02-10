@@ -1,16 +1,12 @@
 import { DocumentNode, ExecutionResult, GraphQLError, print } from "graphql";
 import { SuperAgentTest, Response } from "supertest";
-import { Variables } from "./types";
+import { AssertFn, Variables } from "./types";
 
-import { getOperationName } from "./utils";
+import { asserNoError, getOperationName, wrapAssertFn } from "./utils";
 
-type SuperTestExecutionResult<TData> = ExecutionResult<TData> & {
+export type SuperTestExecutionResult<TData> = ExecutionResult<TData> & {
   response: Response;
 };
-
-type AssertFn<TData> = (
-  result: SuperTestExecutionResult<TData>
-) => Error | undefined | Promise<Error | undefined>;
 
 export default class SuperTestGraphQL<TData, TVariables extends Variables>
   implements PromiseLike<SuperTestExecutionResult<TData>>
@@ -18,13 +14,10 @@ export default class SuperTestGraphQL<TData, TVariables extends Variables>
   private _query?: string;
   private _operationName?: string;
   private _variables?: TVariables;
-  private _path: string;
-  private _asserts: AssertFn<TData>[];
+  private _path = "/graphql";
+  private _asserts: AssertFn<TData>[] = [];
 
-  constructor(private _supertest: SuperAgentTest) {
-    this._path = "/graphql";
-    this._asserts = [];
-  }
+  constructor(private _supertest: SuperAgentTest) {}
 
   /**
    * Send a GraphQL Query Document to the GraphQL server for execution.
@@ -41,7 +34,7 @@ export default class SuperTestGraphQL<TData, TVariables extends Variables>
    * @param variables - the variables for this mutation
    */
   mutate(mutation: DocumentNode | string, variables?: TVariables): this {
-    return this.query(mutation, variables);
+    return this.operation(mutation, variables);
   }
 
   /**
@@ -113,18 +106,7 @@ export default class SuperTestGraphQL<TData, TVariables extends Variables>
    * Assert that there is no errors (`.errors` field) in response returned from the GraphQL API.
    */
   expectNoErrors(): this {
-    this._asserts.push(
-      wrapAssertFn(({ errors }) => {
-        if (errors && Array.isArray(errors) && errors.length > 0) {
-          const errorSummary = (errors as GraphQLError[])
-            .map((e) => e.message)
-            .join(",");
-          return new Error(
-            `expected no errors but got ${errors.length} error(s) in GraphQL response: ${errorSummary}`
-          );
-        }
-      })
-    );
+    this._asserts.push(wrapAssertFn(asserNoError));
     return this;
   }
 
@@ -198,27 +180,3 @@ type RequestPayload<TVariables extends Variables = Variables> = {
   operationName?: string;
   variables?: TVariables;
 };
-
-/**
- * Wraps an assert function into another.
- * The wrapper function edit the stack trace of any assertion error, prepending a more useful stack to it.
- *
- * Borrowed from supertest
- */
-function wrapAssertFn<TData>(assertFn: AssertFn<TData>): AssertFn<TData> {
-  const savedStack = new Error().stack?.split("\n").slice(3) || [];
-
-  return async (res) => {
-    let badStack;
-    const err = await assertFn(res);
-    if (err instanceof Error && err.stack) {
-      badStack = err.stack.replace(err.message, "").split("\n").slice(1);
-      err.stack = [err.toString()]
-        .concat(savedStack)
-        .concat("----")
-        .concat(badStack)
-        .join("\n");
-    }
-    return err;
-  };
-}

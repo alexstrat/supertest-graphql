@@ -1,4 +1,5 @@
-import { DocumentNode, OperationDefinitionNode } from "graphql";
+import { DocumentNode, GraphQLError, OperationDefinitionNode } from "graphql";
+import { AssertFn } from "./types";
 
 export const getOperationName = (
   document: DocumentNode
@@ -60,4 +61,45 @@ export class BlockingQueue<TItem> {
     this.pendingPush = [];
     return flushed;
   }
+
+  get length(): number {
+    return this.pendingPush.length;
+  }
 }
+
+/**
+ * Wraps an assert function into another.
+ * The wrapper function edit the stack trace of any assertion error, prepending a more useful stack to it.
+ *
+ * Borrowed from supertest
+ */
+export function wrapAssertFn<TData>(
+  assertFn: AssertFn<TData>
+): AssertFn<TData> {
+  const savedStack = new Error().stack?.split("\n").slice(3) || [];
+
+  return async (res) => {
+    let badStack;
+    const err = await assertFn(res);
+    if (err instanceof Error && err.stack) {
+      badStack = err.stack.replace(err.message, "").split("\n").slice(1);
+      err.stack = [err.toString()]
+        .concat(savedStack)
+        .concat("----")
+        .concat(badStack)
+        .join("\n");
+    }
+    return err;
+  };
+}
+
+export const asserNoError: AssertFn<unknown> = ({ errors }) => {
+  if (errors && Array.isArray(errors) && errors.length > 0) {
+    const errorSummary = (errors as GraphQLError[])
+      .map((e) => e.message)
+      .join(",");
+    return new Error(
+      `expected no errors but got ${errors.length} error(s) in GraphQL response: ${errorSummary}`
+    );
+  }
+};
