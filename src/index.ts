@@ -55,10 +55,10 @@ const mainPool = new SuperTestExecutionStreamingResultPool();
 export const supertestWs = Object.assign(
   <TData, TVariables extends Variables = Variables>(
     // todo: accept string
-    app: https.Server | http.Server
+    app: https.Server | http.Server | string
   ): SuperTestWSGraphQL<TData, TVariables> => {
     // todo: prametrize
-    const base = getWSBase(app);
+    const base = typeof app === "string" ? app : getWSBase(app);
     return new SuperTestWSGraphQL<TData, TVariables>(base, mainPool);
   },
   {
