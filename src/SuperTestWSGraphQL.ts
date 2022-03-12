@@ -15,7 +15,7 @@ import {
   wrapAssertFn,
 } from "./utils";
 
-class SuperTestExecutionNextResult<TData>
+export class SuperTestExecutionNextResult<TData>
   implements PromiseLike<ExecutionResult<TData>>
 {
   private _asserts: AssertFn<TData>[] = [];
@@ -55,7 +55,7 @@ class SuperTestExecutionNextResult<TData>
   }
 }
 
-class SuperTestExecutionStreamingResult<TData>
+export class SuperTestExecutionStreamingResult<TData>
   implements Observable<ExecutionResult<TData>>
 {
   private queue: BlockingQueue<ExecutionResult<TData>> = new BlockingQueue();
