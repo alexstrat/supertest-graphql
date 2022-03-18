@@ -1,10 +1,10 @@
 import delay from "delay";
 import { DocumentNode, ExecutionResult, print } from "graphql";
-import { Client, createClient, Disposable } from "graphql-ws";
+import { Client, createClient, Disposable, Sink } from "graphql-ws";
 import { ObjMap } from "graphql/jsutils/ObjMap";
 import { SubscriptionClient } from "subscriptions-transport-ws";
 import ws from "ws";
-import { Observable, Observer } from "zen-observable-ts";
+import { Subscriber } from "zen-observable-ts";
 
 import { AssertFn, Variables } from "./types";
 import {
@@ -68,9 +68,9 @@ export class SuperTestExecutionStreamingResult<TData> {
 
   constructor(
     private client: Disposable,
-    private observable: Observable<ExecutionResult<TData>>
+    subscriber: Subscriber<ExecutionResult<TData>>
   ) {
-    this.observable.subscribe({
+    subscriber({
       next: (res) => this.queue.push(res),
       complete: () => {
         // do something
@@ -78,13 +78,8 @@ export class SuperTestExecutionStreamingResult<TData> {
       error: () => {
         // do something
       },
+      closed: false,
     });
-  }
-
-  subscribe(observer: Observer<ExecutionResult<TData>>): {
-    unsubscribe: () => void;
-  } {
-    return this.observable.subscribe(observer);
   }
 
   /**
@@ -239,23 +234,26 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
   ): Promise<TResult1 | TResult2> {
     try {
       const url = new URL(this._path, this._hostname).toString();
-      const run =
+      const connect =
         this._protocol === "graphql-ws"
-          ? runSubscriptionLegacy
-          : runSubscription;
+          ? connectAndAdaptLegacyClient
+          : connectClient;
+
+      const client = await connect(url, this._connectionParams);
 
       if (!this._query) throw new Error("Missing a query");
-      const [observable, disposable] = await run<TData, TVariables>({
-        url,
-        connectionParams: this._connectionParams,
-        query: this._query,
-        variables: this._variables,
-        operationName: this._operationName,
-      });
-
-      const streamingResult = new SuperTestExecutionStreamingResult(
-        disposable,
-        observable
+      const query = this._query;
+      const streamingResult = new SuperTestExecutionStreamingResult<TData>(
+        client,
+        (observer) =>
+          client.subscribe(
+            {
+              query,
+              variables: this._variables,
+              operationName: this._operationName,
+            },
+            observer
+          )
       );
 
       this._pool?.add(streamingResult);
@@ -270,24 +268,41 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
   }
 }
 
-type SubscriptionRunArgs<TVariables> = {
-  url: string;
-  connectionParams?: ConnectionParams;
+type SubscriptionArgs<TVariables> = {
   query: string;
   variables?: TVariables;
   operationName?: string;
 };
 
-const runSubscriptionLegacy = async <TData, TVariables extends Variables>({
-  url,
-  query,
-  connectionParams,
-  variables,
-  operationName,
-}: SubscriptionRunArgs<TVariables>): Promise<
-  [Observable<ExecutionResult<TData>>, Disposable]
-> => {
-  const client = await new Promise<SubscriptionClient>((res, reject) => {
+type AbstractClient = {
+  dispose: () => void | Promise<void>;
+  subscribe: <TData, TVariables extends Variables>(
+    args: SubscriptionArgs<TVariables>,
+    observer: Sink<ExecutionResult<TData>>
+  ) => () => void;
+};
+
+const connectClient = async (
+  url: string,
+  connectionParams?: ConnectionParams
+): Promise<AbstractClient> => {
+  return await new Promise<Client>((res, reject) => {
+    const client = createClient({
+      url,
+      connectionParams,
+      lazy: false,
+      onNonLazyError: (error) => reject(error),
+      webSocketImpl: ws,
+    });
+    client.on("connected", () => res(client));
+  });
+};
+
+const connectAndAdaptLegacyClient = async (
+  url: string,
+  connectionParams?: ConnectionParams
+): Promise<AbstractClient> => {
+  const legacyClient = await new Promise<SubscriptionClient>((res, reject) => {
     const client = new SubscriptionClient(
       url,
       {
@@ -304,58 +319,14 @@ const runSubscriptionLegacy = async <TData, TVariables extends Variables>({
     );
   });
 
-  const observable = client.request({
-    query: query,
-    variables: variables,
-    operationName: operationName,
-  });
-  const disposable = {
-    dispose: () => client.close(),
-  };
-
-  return [
-    observable as unknown as Observable<ExecutionResult<TData>>,
-    disposable,
-  ];
-};
-
-const runSubscription = async <TData, TVariables extends Variables>({
-  url,
-  query,
-  connectionParams,
-  variables,
-  operationName,
-}: SubscriptionRunArgs<TVariables>): Promise<
-  [Observable<ExecutionResult<TData>>, Disposable]
-> => {
-  const client = await new Promise<Client>((res, reject) => {
-    const client = createClient({
-      url,
-      connectionParams,
-      lazy: false,
-      onNonLazyError: (error) => reject(error),
-      webSocketImpl: ws,
-    });
-    client.on("connected", () => res(client));
-  });
-
-  const observable = new Observable<ExecutionResult<TData>>((observer) => {
-    client.subscribe<TData>(
-      {
-        query,
-        variables,
-        operationName,
-      },
-      observer
-    );
-  });
-
-  const disposable = {
-    dispose: async () => {
-      await client.dispose();
-      // dispose rely on emiter to close subsctiptions
-      await delay(5);
+  return {
+    dispose: () => {
+      legacyClient.close();
+    },
+    subscribe: (args, observer) => {
+      // @ts-expect-error not exact but fine
+      const { unsubscribe } = legacyClient.request(args).subscribe(observer);
+      return unsubscribe;
     },
   };
-  return [observable, disposable];
 };
