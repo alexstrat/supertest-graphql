@@ -1,3 +1,4 @@
+import delay from "delay";
 import { DocumentNode, ExecutionResult, print } from "graphql";
 import { Client, createClient, Disposable } from "graphql-ws";
 import { ObjMap } from "graphql/jsutils/ObjMap";
@@ -349,5 +350,12 @@ const runSubscription = async <TData, TVariables extends Variables>({
     );
   });
 
+  const disposable = {
+    dispose: async () => {
+      await client.dispose();
+      // dispose rely on emiter to close subsctiptions
+      await delay(5);
+    },
+  };
   return [observable, client];
 };
