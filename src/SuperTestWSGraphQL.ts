@@ -357,5 +357,5 @@ const runSubscription = async <TData, TVariables extends Variables>({
       await delay(5);
     },
   };
-  return [observable, client];
+  return [observable, disposable];
 };
