@@ -67,6 +67,7 @@ export const supertestWs = Object.assign(
 );
 
 export * from "./SuperTestGraphQL";
+export * from "./SuperTestWSGraphQL";
 export * from "./types";
 export { SuperTestGraphQL };
 export default supertest;

@@ -2,13 +2,19 @@ import { gql, ApolloServer, ExpressContext } from "apollo-server-express";
 import express from "express";
 import { createServer, Server } from "http";
 import { SubscriptionServer } from "subscriptions-transport-ws";
+import { useServer } from "graphql-ws/lib/use/ws";
 import { execute, subscribe } from "graphql";
 import { makeExecutableSchema } from "@graphql-tools/schema";
 import { GraphQLFieldResolver } from "graphql";
 import { PubSub } from "graphql-subscriptions";
 import delay from "delay";
 
-import request, { supertestWs } from "./";
+import request, {
+  LEGACY_WEBSOCKET_PROTOCOL,
+  supertestWs,
+  WebSocketProtocol,
+} from "./";
+import { WebSocketServer } from "ws";
 
 const typeDefs = gql`
   type Query {
@@ -42,10 +48,12 @@ const pubsub: PubSub = new PubSub();
 
 type InitServerOptions = {
   graphqlPath?: string;
+  wsProtocol?: WebSocketProtocol;
 };
 
 const initTestServer = async ({
-  graphqlPath,
+  graphqlPath = "/graphql",
+  wsProtocol = "graphql-transport-ws",
 }: InitServerOptions = {}): Promise<Server> => {
   const app = express();
   const httpServer = createServer(app);
@@ -75,16 +83,29 @@ const initTestServer = async ({
     },
   });
 
-  const subscriptionServer = SubscriptionServer.create(
-    {
-      schema,
-      execute,
-      subscribe,
-    },
-    {
+  let closeWsMobile: () => Promise<void>;
+  if (wsProtocol === "graphql-ws") {
+    const subscriptionServer = SubscriptionServer.create(
+      {
+        schema,
+        execute,
+        subscribe,
+      },
+      {
+        server: httpServer,
+      }
+    );
+    closeWsMobile = async () => subscriptionServer.close();
+  } else {
+    const server = new WebSocketServer({
       server: httpServer,
-    }
-  );
+      path: graphqlPath,
+    });
+
+    const serverCleanup = useServer({ schema }, server);
+    closeWsMobile = async () => await serverCleanup.dispose();
+  }
+
   const server = new ApolloServer({
     schema,
     context: (c) => c,
@@ -93,7 +114,7 @@ const initTestServer = async ({
         async serverWillStart() {
           return {
             async drainServer() {
-              subscriptionServer.close();
+              closeWsMobile();
             },
           };
         },
@@ -270,9 +291,44 @@ describe(".expectNoErrors()", () => {
   });
 });
 
+describe("test ws legacy", () => {
+  beforeEach(async () => {
+    server = await initTestServer({ wsProtocol: "graphql-ws" });
+    await new Promise<void>((res) =>
+      server.listen(0, "localhost", () => res())
+    );
+  });
+
+  afterEach(async () => {
+    await supertestWs.end();
+    server.close();
+  });
+
+  it("should work", async () => {
+    const sub = await supertestWs(server).protocol(LEGACY_WEBSOCKET_PROTOCOL)
+      .subscribe(gql`
+      subscription {
+        onHi
+      }
+    `);
+
+    // there is no wayt to know if the subscription is active,
+    // to avoid race conditions we need to wait a bit
+    await delay(200);
+
+    pubsub.publish("ON_HI", {});
+    const res = await sub.next().expectNoErrors();
+
+    expect(res.data).toEqual({ onHi: "Hi unknown" });
+  });
+});
+
 describe("test ws", () => {
-  beforeEach((done) => {
-    server.listen(0, "localhost", done);
+  beforeEach(async () => {
+    server = await initTestServer();
+    await new Promise<void>((res) =>
+      server.listen(0, "localhost", () => res())
+    );
   });
 
   afterEach(async () => {

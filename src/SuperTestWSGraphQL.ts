@@ -1,11 +1,9 @@
 import { DocumentNode, ExecutionResult, print } from "graphql";
+import { Client, createClient, Disposable } from "graphql-ws";
 import { ObjMap } from "graphql/jsutils/ObjMap";
-import {
-  Observable,
-  Observer,
-  SubscriptionClient,
-} from "subscriptions-transport-ws";
+import { SubscriptionClient } from "subscriptions-transport-ws";
 import ws from "ws";
+import { Observable, Observer } from "zen-observable-ts";
 
 import { AssertFn, Variables } from "./types";
 import {
@@ -14,6 +12,15 @@ import {
   getOperationName,
   wrapAssertFn,
 } from "./utils";
+
+// /!\ graphql-ws is the legacy one
+export type WebSocketProtocol = "graphql-transport-ws" | "graphql-ws";
+
+/**
+ * The protocol implemented by the library `subscriptions-transport-ws` and
+ * that is now considered legacy.
+ */
+export const LEGACY_WEBSOCKET_PROTOCOL = "graphql-ws";
 
 export class SuperTestExecutionNextResult<TData>
   implements PromiseLike<ExecutionResult<TData>>
@@ -55,13 +62,11 @@ export class SuperTestExecutionNextResult<TData>
   }
 }
 
-export class SuperTestExecutionStreamingResult<TData>
-  implements Observable<ExecutionResult<TData>>
-{
+export class SuperTestExecutionStreamingResult<TData> {
   private queue: BlockingQueue<ExecutionResult<TData>> = new BlockingQueue();
 
   constructor(
-    private client: SubscriptionClient,
+    private client: Disposable,
     private observable: Observable<ExecutionResult<TData>>
   ) {
     this.observable.subscribe({
@@ -75,7 +80,7 @@ export class SuperTestExecutionStreamingResult<TData>
     });
   }
 
-  subscribe(observer: Observer<ExecutionResult<TData, ObjMap<unknown>>>): {
+  subscribe(observer: Observer<ExecutionResult<TData>>): {
     unsubscribe: () => void;
   } {
     return this.observable.subscribe(observer);
@@ -109,7 +114,7 @@ export class SuperTestExecutionStreamingResult<TData>
    * Close the operation and the connection.
    */
   async close(): Promise<void> {
-    this.client.close();
+    await this.client.dispose();
   }
 }
 
@@ -134,6 +139,7 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
   private _operationName?: string;
   private _variables?: TVariables;
   private _path = "/graphql";
+  private _protocol: WebSocketProtocol = "graphql-transport-ws";
   private _connectionParams?: ConnectionParams;
 
   constructor(
@@ -203,6 +209,15 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
   }
 
   /**
+   * Set the GraphQL WebSocket porotocol.
+   * You can set the legacy protocol with the variable `LEGACY_WEBSOCKET_PROTOCOL`.
+   */
+  protocol(wsProtocol: WebSocketProtocol): this {
+    this._protocol = wsProtocol;
+    return this;
+  }
+
+  /**
    * Set connection params.
    */
   connectionParams(params: ConnectionParams): this {
@@ -222,32 +237,24 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
   ): Promise<TResult1 | TResult2> {
     try {
-      const client = await new Promise<SubscriptionClient>((res, reject) => {
-        const client = new SubscriptionClient(
-          new URL(this._path, this._hostname).toString(),
-          {
-            connectionParams: this._connectionParams,
-            connectionCallback: (error) => {
-              if (error) {
-                client.close();
-                return reject(error);
-              }
-              res(client);
-            },
-          },
-          ws
-        );
-      });
+      const url = new URL(this._path, this._hostname).toString();
+      const run =
+        this._protocol === "graphql-ws"
+          ? runSubscriptionLegacy
+          : runSubscription;
 
-      const observable = client.request({
+      if (!this._query) throw new Error("Missing a query");
+      const [observable, disposable] = await run<TData, TVariables>({
+        url,
+        connectionParams: this._connectionParams,
         query: this._query,
         variables: this._variables,
         operationName: this._operationName,
       });
 
       const streamingResult = new SuperTestExecutionStreamingResult(
-        client,
-        observable as unknown as Observable<ExecutionResult<TData>>
+        disposable,
+        observable
       );
 
       this._pool?.add(streamingResult);
@@ -261,3 +268,86 @@ export default class SuperTestWSGraphQL<TData, TVariables extends Variables>
     }
   }
 }
+
+type SubscriptionRunArgs<TVariables> = {
+  url: string;
+  connectionParams?: ConnectionParams;
+  query: string;
+  variables?: TVariables;
+  operationName?: string;
+};
+
+const runSubscriptionLegacy = async <TData, TVariables extends Variables>({
+  url,
+  query,
+  connectionParams,
+  variables,
+  operationName,
+}: SubscriptionRunArgs<TVariables>): Promise<
+  [Observable<ExecutionResult<TData>>, Disposable]
+> => {
+  const client = await new Promise<SubscriptionClient>((res, reject) => {
+    const client = new SubscriptionClient(
+      url,
+      {
+        connectionParams,
+        connectionCallback: (error) => {
+          if (error) {
+            client.close();
+            return reject(error);
+          }
+          res(client);
+        },
+      },
+      ws
+    );
+  });
+
+  const observable = client.request({
+    query: query,
+    variables: variables,
+    operationName: operationName,
+  });
+  const disposable = {
+    dispose: () => client.close(),
+  };
+
+  return [
+    observable as unknown as Observable<ExecutionResult<TData>>,
+    disposable,
+  ];
+};
+
+const runSubscription = async <TData, TVariables extends Variables>({
+  url,
+  query,
+  connectionParams,
+  variables,
+  operationName,
+}: SubscriptionRunArgs<TVariables>): Promise<
+  [Observable<ExecutionResult<TData>>, Disposable]
+> => {
+  const client = await new Promise<Client>((res, reject) => {
+    const client = createClient({
+      url,
+      connectionParams,
+      lazy: false,
+      onNonLazyError: (error) => reject(error),
+      webSocketImpl: ws,
+    });
+    client.on("connected", () => res(client));
+  });
+
+  const observable = new Observable<ExecutionResult<TData>>((observer) => {
+    client.subscribe<TData>(
+      {
+        query,
+        variables,
+        operationName,
+      },
+      observer
+    );
+  });
+
+  return [observable, client];
+};
