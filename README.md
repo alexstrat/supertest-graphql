@@ -75,6 +75,33 @@ const { data } = await request(app)
   .variables({petId: 'my-cat' })
 ```
 
+### Subscriptions with WebScoket
+```ts
+import { supertestWs } from 'supertest-graphql'
+import gql from 'graphql-tag'
+
+// for websocket the server needs to be started and stopped manually
+beForeEach(() => server.listen(0, "localhost"))
+afterEach(() => server.close())
+
+test('should get pets', async () => {
+  const sub = await supertestWs(app)
+    .subscribe(gql`
+      subscription {
+        newPetAdded {
+          name
+          petType
+        }
+      }
+    `)
+  
+  // will wait or pop the next value
+  const { data } = await sub.next().expectNoErrors()
+
+  expect(data.newPetAdded.name).toEqual('Fifi')
+})
+```
+
 ### Authentication
 ```ts
 const { data } = await request(app)
@@ -88,9 +115,20 @@ const { data } = await request(app)
   .set('authorization', 'my token')
   .query(...)
 ```
+
+For WebSocket with `connectionParams`:
+```ts
+import { supertestWs } from 'supertest-graphql'
+
+const sub = await supertestWs(app)
+  .connectionParams({
+    token: 'my token'
+  })
+  .subscribe(...)
+```
 ### Change GraphQL endpoint path
 
-By dfault, the execution are sent to `/graphql`.
+By default, the execution are sent to `/graphql`.
 
 You can change this with `.path()`:
 
@@ -100,7 +138,12 @@ const { data } = await request(app)
   .query(...)
 ```
 
+### Use WebSocket legacy protocol
 
+```ts
+import { supertestWs, LEGACY_WEBSOCKET_PROTOCOL } from 'supertest-graphql'
 
-
-
+const sub = await supertestWs(app)
+  .protocol(LEGACY_WEBSOCKET_PROTOCOL)
+  .subscribe(...)
+```

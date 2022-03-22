@@ -1,7 +1,20 @@
 import { gql, ApolloServer, ExpressContext } from "apollo-server-express";
 import express from "express";
+import { createServer, Server } from "http";
+import { SubscriptionServer } from "subscriptions-transport-ws";
+import { useServer } from "graphql-ws/lib/use/ws";
+import { execute, subscribe } from "graphql";
+import { makeExecutableSchema } from "@graphql-tools/schema";
 import { GraphQLFieldResolver } from "graphql";
-import request from "./";
+import { PubSub } from "graphql-subscriptions";
+import delay from "delay";
+
+import request, {
+  LEGACY_WEBSOCKET_PROTOCOL,
+  supertestWs,
+  WebSocketProtocol,
+} from "./";
+import { WebSocketServer } from "ws";
 
 const typeDefs = gql`
   type Query {
@@ -9,6 +22,9 @@ const typeDefs = gql`
   }
   type Mutation {
     do: String!
+  }
+  type Subscription {
+    onHi(name: String): String!
   }
 `;
 
@@ -25,19 +41,29 @@ type MutationDoResolver = GraphQLFieldResolver<
   string
 >;
 
-let app: express.Application;
+let server: Server;
 let queryHiResolver: jest.Mock<string, Parameters<QueryHiResolver>>;
 let mutationDoResolver: jest.Mock<string, Parameters<MutationDoResolver>>;
+const pubsub: PubSub = new PubSub();
 
-beforeEach(async () => {
-  app = express();
+type InitServerOptions = {
+  graphqlPath?: string;
+  wsProtocol?: WebSocketProtocol;
+};
+
+const initTestServer = async ({
+  graphqlPath = "/graphql",
+  wsProtocol = "graphql-transport-ws",
+}: InitServerOptions = {}): Promise<Server> => {
+  const app = express();
+  const httpServer = createServer(app);
   queryHiResolver = jest.fn<string, Parameters<QueryHiResolver>>(
     (_, { name = "" }) => `hi ${name}!`
   );
   mutationDoResolver = jest.fn<string, Parameters<MutationDoResolver>>(
     () => "done!"
   );
-  const server = new ApolloServer({
+  const schema = makeExecutableSchema({
     typeDefs,
     resolvers: {
       Query: {
@@ -46,17 +72,67 @@ beforeEach(async () => {
       Mutation: {
         do: mutationDoResolver,
       },
+      Subscription: {
+        onHi: {
+          subscribe: () => pubsub.asyncIterator(["ON_HI"]),
+          resolve: (_, { name }: { name?: string | null }) => {
+            return `Hi ${name ? name : "unknown"}`;
+          },
+        },
+      },
     },
-    // pass express context
+  });
+
+  let closeWsMobile: () => Promise<void>;
+  if (wsProtocol === "graphql-ws") {
+    const subscriptionServer = SubscriptionServer.create(
+      {
+        schema,
+        execute,
+        subscribe,
+      },
+      {
+        server: httpServer,
+      }
+    );
+    closeWsMobile = async () => subscriptionServer.close();
+  } else {
+    const server = new WebSocketServer({
+      server: httpServer,
+      path: graphqlPath,
+    });
+
+    const serverCleanup = useServer({ schema }, server);
+    closeWsMobile = async () => await serverCleanup.dispose();
+  }
+
+  const server = new ApolloServer({
+    schema,
     context: (c) => c,
+    plugins: [
+      {
+        async serverWillStart() {
+          return {
+            async drainServer() {
+              closeWsMobile();
+            },
+          };
+        },
+      },
+    ],
   });
   await server.start();
-  server.applyMiddleware({ app });
+  server.applyMiddleware({ app, path: graphqlPath });
+  return httpServer;
+};
+
+beforeEach(async () => {
+  server = await initTestServer();
 });
 
 describe(".query()", () => {
   test("it queries", async () => {
-    const { data } = await request<{ hi: string }>(app).query(
+    const { data } = await request<{ hi: string }>(server).query(
       gql`
         query {
           hi
@@ -67,7 +143,7 @@ describe(".query()", () => {
   });
   describe("with variables", () => {
     test("it queries", async () => {
-      const { data } = await request<{ hi: string }>(app).query(
+      const { data } = await request<{ hi: string }>(server).query(
         gql`
           query Greetings($name: String!) {
             hi(name: $name)
@@ -83,7 +159,7 @@ describe(".query()", () => {
       queryHiResolver.mockImplementation(() => {
         throw new Error("Bad");
       });
-      const { errors } = await request<{ hi: string }>(app).query(
+      const { errors } = await request<{ hi: string }>(server).query(
         gql`
           query {
             hi
@@ -100,7 +176,7 @@ describe(".query()", () => {
 
 describe(".mutate()", () => {
   test("it mutates", async () => {
-    const { data } = await request<{ do: string }>(app).query(
+    const { data } = await request<{ do: string }>(server).query(
       gql`
         mutation {
           do
@@ -113,7 +189,7 @@ describe(".mutate()", () => {
 
 describe(".variables()", () => {
   test("it queries with variables", async () => {
-    const { data } = await request<{ hi: string }>(app)
+    const { data } = await request<{ hi: string }>(server)
       .query(
         gql`
           query Greetings($name: String!) {
@@ -128,21 +204,10 @@ describe(".variables()", () => {
 
 describe(".path()", () => {
   it("changes the path to query graphql", async () => {
-    app = express();
-    const server = new ApolloServer({
-      typeDefs,
-      resolvers: {
-        Query: {
-          hi: (_, { name = "" }) => `hi ${name}!`,
-        },
-        Mutation: {
-          do: () => "done!",
-        },
-      },
+    server = await initTestServer({
+      graphqlPath: "/specialUrl",
     });
-    await server.start();
-    server.applyMiddleware({ app, path: "/specialUrl" });
-    const { data } = await request<{ hi: string }>(app)
+    const { data } = await request<{ hi: string }>(server)
       .path("/specialUrl")
       .query(
         gql`
@@ -158,7 +223,7 @@ describe(".path()", () => {
 
 describe(".set()", () => {
   test("it properly set headers", async () => {
-    await request<{ hi: string }>(app)
+    await request<{ hi: string }>(server)
       .set("authorization", "bar")
       .query(
         gql`
@@ -175,7 +240,7 @@ describe(".set()", () => {
 
 describe(".auth()", () => {
   test("it properly set basic headers", async () => {
-    await request<{ hi: string }>(app)
+    await request<{ hi: string }>(server)
       .auth("username", "password")
       .query(
         gql`
@@ -198,7 +263,7 @@ describe(".expectNoErrors()", () => {
       throw new Error("Bad");
     });
     return expect(
-      request<{ hi: string }>(app)
+      request<{ hi: string }>(server)
         .query(
           gql`
             query {
@@ -213,7 +278,7 @@ describe(".expectNoErrors()", () => {
   });
   it("when there is no error it should not throw", async () => {
     return expect(
-      request<{ hi: string }>(app)
+      request<{ hi: string }>(server)
         .query(
           gql`
             query {
@@ -223,5 +288,68 @@ describe(".expectNoErrors()", () => {
         )
         .expectNoErrors()
     ).resolves.not.toThrow();
+  });
+});
+
+describe("test ws legacy", () => {
+  beforeEach(async () => {
+    server = await initTestServer({ wsProtocol: "graphql-ws" });
+    await new Promise<void>((res) =>
+      server.listen(0, "localhost", () => res())
+    );
+  });
+
+  afterEach(async () => {
+    await supertestWs.end();
+    server.close();
+  });
+
+  it("should work", async () => {
+    const sub = await supertestWs(server).protocol(LEGACY_WEBSOCKET_PROTOCOL)
+      .subscribe(gql`
+      subscription {
+        onHi
+      }
+    `);
+
+    // there is no wayt to know if the subscription is active,
+    // to avoid race conditions we need to wait a bit
+    await delay(200);
+
+    pubsub.publish("ON_HI", {});
+    const res = await sub.next().expectNoErrors();
+
+    expect(res.data).toEqual({ onHi: "Hi unknown" });
+  });
+});
+
+describe("test ws", () => {
+  beforeEach(async () => {
+    server = await initTestServer();
+    await new Promise<void>((res) =>
+      server.listen(0, "localhost", () => res())
+    );
+  });
+
+  afterEach(async () => {
+    await supertestWs.end();
+    server.close();
+  });
+
+  it("should work", async () => {
+    const sub = await supertestWs(server).subscribe(gql`
+      subscription {
+        onHi
+      }
+    `);
+
+    // there is no wayt to know if the subscription is active,
+    // to avoid race conditions we need to wait a bit
+    await delay(200);
+
+    pubsub.publish("ON_HI", {});
+    const res = await sub.next().expectNoErrors();
+
+    expect(res.data).toEqual({ onHi: "Hi unknown" });
   });
 });
