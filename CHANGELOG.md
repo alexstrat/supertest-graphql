@@ -1,3 +1,15 @@
+# v1.1.3 (Tue Mar 22 2022)
+
+#### 🐛 Bug Fix
+
+- Add supports for subscriptions [#6](https://github.com/alexstrat/supertest-graphql/pull/6) ([@alexstrat](https://github.com/alexstrat))
+
+#### Authors: 1
+
+- Alexandre Lacheze ([@alexstrat](https://github.com/alexstrat))
+
+---
+
 # v1.1.2 (Thu Dec 23 2021)
 
 #### 🐛 Bug Fix
