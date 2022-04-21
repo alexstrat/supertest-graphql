@@ -1,3 +1,15 @@
+# v1.1.4 (Thu Apr 21 2022)
+
+#### 🐛 Bug Fix
+
+- Bump minimist from 1.2.5 to 1.2.6 [#9](https://github.com/alexstrat/supertest-graphql/pull/9) ([@dependabot[bot]](https://github.com/dependabot[bot]))
+
+#### Authors: 1
+
+- [@dependabot[bot]](https://github.com/dependabot[bot])
+
+---
+
 # v1.1.3 (Tue Mar 22 2022)
 
 #### 🐛 Bug Fix
